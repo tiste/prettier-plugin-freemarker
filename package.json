@@ -1,0 +1,27 @@
+{
+  "name": "prettier-plugin-freemarker",
+  "version": "0.0.1",
+  "description": "Code formatter for FTL Freemarker templating",
+  "main": "src/index.js",
+  "keywords": [
+    "prettier",
+    "plugin",
+    "freemarker",
+    "ftl",
+    "formatter"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tiste/prettier-plugin-freemarker.git"
+  },
+  "peerDependencies": {
+    "prettier": "^3.0.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.0.0"
+  },
+  "scripts": {
+    "test": "echo \"No tests yet\" && exit 0"
+  }
+}
