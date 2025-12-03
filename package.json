@@ -2,6 +2,7 @@
   "name": "prettier-plugin-freemarker",
   "version": "0.0.1",
   "description": "Code formatter for FTL Freemarker templating",
+  "author": "Baptiste Lecocq",
   "main": "src/index.js",
   "keywords": [
     "prettier",
