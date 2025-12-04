@@ -317,7 +317,7 @@ const printers = {
   "freemarker-ast": {
     print: (path, options) => {
       const node = path.getValue();
-      const text = node && node.value ? node.value : "";
+      const text = node && node.body ? node.body : "";
       const formatted = formatFtlText(text, options);
 
       const lines = formatted.split(/\r?\n/);
