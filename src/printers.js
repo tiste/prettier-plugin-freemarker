@@ -218,20 +218,56 @@ const buildLogicalLines = (text, options = {}) => {
   const printWidth = getPrintWidth(options);
   const logicalLines = [];
 
-  for (const raw of text.split(/\r?\n/)) {
-    if (raw.trim() === "") {
+  const lines = text.split(/\r?\n/);
+  let pendingMacroParts = null;
+
+  const flushPendingMacro = (forceSplit = false) => {
+    if (!pendingMacroParts) return;
+
+    const joined = pendingMacroParts.map((line) => line.trim()).join(" ");
+    const shouldJoin = !forceSplit && /\/>\s*$/.test(joined);
+    const targetLines = shouldJoin ? [joined] : pendingMacroParts;
+
+    for (const line of targetLines) {
+      const pieces = splitLongLine(line, printWidth);
+      logicalLines.push(...(pieces.length === 0 ? [""] : pieces));
+    }
+
+    pendingMacroParts = null;
+  };
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+
+    if (pendingMacroParts) {
+      pendingMacroParts.push(trimmed);
+      if (/>\s*$/.test(trimmed)) {
+        const forceSplit = !/\/>\s*$/.test(trimmed);
+        flushPendingMacro(forceSplit);
+      }
+      continue;
+    }
+
+    if (trimmed === "") {
       logicalLines.push("");
       continue;
     }
 
-    const pieces = splitLongLine(raw, printWidth);
-    if (pieces.length === 0) {
-      logicalLines.push("");
+    // Capture multi-line inline macros: start with <@ and no closing ">" on the same line.
+    if (
+      /^<@/.test(trimmed) &&
+      !/>\s*$/.test(trimmed) &&
+      !/<\/@/.test(trimmed)
+    ) {
+      pendingMacroParts = [trimmed];
       continue;
     }
 
-    logicalLines.push(...pieces);
+    const pieces = splitLongLine(trimmed, printWidth);
+    logicalLines.push(...(pieces.length === 0 ? [""] : pieces));
   }
+
+  flushPendingMacro(true);
 
   return logicalLines;
 };
