@@ -2,29 +2,45 @@
   "name": "prettier-plugin-freemarker",
   "version": "0.0.1",
   "description": "Code formatter for FTL Freemarker templating",
-  "author": "Baptiste Lecocq <baptiste.lecocq@gmail.com> (https://tiste.io)",
-  "main": "src/index.js",
   "keywords": [
     "prettier",
     "plugin",
     "freemarker",
     "ftl",
-    "formatter"
+    "formatter",
+    "prettier-plugin",
+    "template",
+    "apache-freemarker"
   ],
-  "license": "MIT",
+  "homepage": "https://github.com/tiste/prettier-plugin-freemarker#readme",
+  "bugs": {
+    "url": "https://github.com/tiste/prettier-plugin-freemarker/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/tiste/prettier-plugin-freemarker.git"
   },
-  "peerDependencies": {
-    "prettier": "^3.0.0"
+  "license": "MIT",
+  "author": "Baptiste Lecocq <baptiste.lecocq@gmail.com> (https://tiste.io)",
+  "main": "src/index.js",
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "format": "prettier --write .",
+    "prepublishOnly": "npm test",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest"
   },
   "devDependencies": {
     "jest": "^30.2.0",
     "prettier": "^3.0.0"
   },
-  "scripts": {
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "format": "prettier --write ."
+  "peerDependencies": {
+    "prettier": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
   }
 }
