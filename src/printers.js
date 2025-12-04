@@ -1,7 +1,15 @@
 const { doc } = require("prettier");
 const { concat, hardline } = doc.builders;
 
-const INLINE_TAGS = new Set([
+// =============================================================================
+// PATTERNS AND CONSTANTS
+// =============================================================================
+
+const HTML_TAG_PATTERN = "[A-Za-z][A-Za-z0-9-]*";
+const DYNAMIC_TAG_PATTERN = "\\$\\{[^}]+\\}";
+const TAG_NAME_PATTERN = `(?:${HTML_TAG_PATTERN}|${DYNAMIC_TAG_PATTERN})`;
+
+const INLINE_HTML_TAGS = new Set([
   "span",
   "b",
   "i",
@@ -12,155 +20,169 @@ const INLINE_TAGS = new Set([
   "a",
 ]);
 
-const HTML_TAG_NAME_PATTERN = "[A-Za-z][A-Za-z0-9-]*";
-const DYNAMIC_TAG_NAME_PATTERN = "\\$\\{[^}]+\\}";
-const ANY_TAG_NAME_PATTERN = `(?:${HTML_TAG_NAME_PATTERN}|${DYNAMIC_TAG_NAME_PATTERN})`;
+const FTL_BLOCK_OPENERS = [
+  "<#if",
+  "<#list",
+  "<#macro",
+  "<#function",
+  "<#switch",
+  "<#attempt",
+  "<#compress",
+  "<#escape",
+];
+
+// =============================================================================
+// UTILITY FUNCTIONS
+// =============================================================================
 
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const matchTagName = (t) => {
-  const match = t.match(new RegExp(`^<(${ANY_TAG_NAME_PATTERN})`));
+
+const extractTagName = (line) => {
+  const match = line.match(new RegExp(`^<(${TAG_NAME_PATTERN})`));
   return match ? match[1] : null;
-};
-
-// --- Helpers FTL généraux ---
-const isFtlClosingTag = (t) => /^<\/#/.test(t.trim());
-const isElseLike = (t) => /^<#(else|elseif|recover)\b/.test(t.trim());
-const isCaseLike = (t) => /^<#(case|default)\b/.test(t.trim());
-
-const isFtlBlockOpener = (t) => {
-  t = t.trim();
-  const startsWith = (prefix) => t.startsWith(prefix);
-
-  if (
-    (startsWith("<#assign") ||
-      startsWith("<#local") ||
-      startsWith("<#global")) &&
-    !t.includes("=")
-  ) {
-    return true;
-  }
-
-  return [
-    "<#if",
-    "<#list",
-    "<#macro",
-    "<#function",
-    "<#switch",
-    "<#attempt",
-    "<#compress",
-    "<#escape",
-  ].some((prefix) => startsWith(prefix));
-};
-
-// --- Helpers HTML ---
-const isHtmlOpener = (t) => {
-  t = t.trim();
-  if (!t.startsWith("<")) return false;
-
-  if (["</", "<#", "[#", "<@", "<!", "<?"].some((p) => t.startsWith(p)))
-    return false;
-
-  const tagName = matchTagName(t);
-  const normalizedTag =
-    tagName && !tagName.startsWith("${") ? tagName.toLowerCase() : null;
-
-  if (/\/>\s*$/.test(t)) return false;
-
-  if (normalizedTag && INLINE_TAGS.has(normalizedTag)) {
-    const firstGt = t.indexOf(">");
-    if (firstGt !== -1) {
-      const after = t.slice(firstGt + 1);
-      const closeRe = new RegExp(`</${normalizedTag}\\b`);
-      if (closeRe.test(after)) return false;
-    }
-    return true;
-  }
-
-  return true;
-};
-
-// --- Helpers Macros <@...> ---
-const isMacroOpener = (t) => {
-  t = t.trim();
-  if (/\/>/.test(t)) return false;
-  if (t.includes("</@")) return false;
-  return /^<@[A-Za-z_][A-Za-z0-9_.-]*/.test(t);
-};
-
-const isMacroClosing = (t) => /^<\/@[A-Za-z_][A-Za-z0-9_.-]*>/.test(t.trim());
-
-// --- Helpers HTML closing tags ---
-const countHtmlClosingTags = (t) => {
-  const closingRe = new RegExp(`</${ANY_TAG_NAME_PATTERN}\\s*>`, "g");
-  let count = 0;
-  while (closingRe.exec(t)) count++;
-  return count;
-};
-
-const countLeadingHtmlClosings = (t) => {
-  let count = 0;
-  let rest = t.trim();
-  while (true) {
-    const match = rest.match(
-      new RegExp(`^</${ANY_TAG_NAME_PATTERN}\\s*>\\s*`),
-    );
-    if (!match) break;
-    count++;
-    rest = rest.slice(match[0].length);
-  }
-  return count;
-};
-
-// --- Inline blocks FTL / HTML / Macro sur une ligne ---
-const isInlineAssignBlock = (t) =>
-  /<#assign\b[^>]*>.*<\/#assign>/.test(t.trim());
-const isInlineFtlBlock = (t) => {
-  t = t.trim();
-  return t.startsWith("<#") && t.includes("</#");
-};
-const isInlineHtmlBlock = (t) => {
-  t = t.trim();
-  if (!t.startsWith("<")) return false;
-  if (["</", "<#", "<@", "<!", "<?"].some((p) => t.startsWith(p))) return false;
-
-  const m = t.match(new RegExp(`^<(${ANY_TAG_NAME_PATTERN})(\\s|>)`));
-  if (!m) return false;
-  const tag = m[1];
-  const firstGt = t.indexOf(">");
-  if (firstGt === -1) return false;
-  const after = t.slice(firstGt + 1);
-  const closeRe = new RegExp(`</\\s*${escapeRegex(tag)}\\s*>`);
-  return closeRe.test(after);
-};
-const isInlineMacroBlock = (t) =>
-  /<@[A-Za-z_][A-Za-z0-9_.-]*\b[^>]*>.*<\/@[A-Za-z_][A-Za-z0-9_.-]*>/.test(
-    t.trim(),
-  );
-const isSelfClosingMacroLine = (t) => {
-  t = t.trim();
-  return t.startsWith("<@") && /\/>\s*$/.test(t) && !t.includes("</@");
 };
 
 const getPrintWidth = (options = {}) =>
   typeof options.printWidth === "number" ? options.printWidth : 80;
 
+// =============================================================================
+// LINE CLASSIFICATION - Unified trait detection
+// =============================================================================
+
+const classify = {
+  // FTL block openers: <#if>, <#list>, <#macro>, etc.
+  isFtlOpener: (t) => {
+    // Block-form assign/local/global (without =)
+    if (/^<#(assign|local|global)\b/.test(t) && !t.includes("=")) return true;
+    return FTL_BLOCK_OPENERS.some((prefix) => t.startsWith(prefix));
+  },
+
+  // FTL block closers: </#...>
+  isFtlCloser: (t) => /^<\/#/.test(t),
+
+  // FTL intermediate tags that need dedent before, indent after
+  isFtlIntermediate: (t) => /^<#(else|elseif|recover)\b/.test(t),
+
+  // Switch case/default - similar to intermediate but within switch context
+  isCaseLike: (t) => /^<#(case|default)\b/.test(t),
+
+  // Switch specific
+  isSwitchOpener: (t) => /^<#switch\b/.test(t),
+  isSwitchCloser: (t) => /^<\/#switch>/.test(t),
+
+  // Macro calls: <@name ...>
+  isMacroOpener: (t) => {
+    if (/\/>/.test(t)) return false;
+    if (t.includes("</@")) return false;
+    return /^<@[A-Za-z_][A-Za-z0-9_.-]*/.test(t);
+  },
+
+  // Macro closers: </@name>
+  isMacroCloser: (t) => /^<\/@[A-Za-z_][A-Za-z0-9_.-]*>/.test(t),
+
+  // HTML openers: <tag ...> (non-self-closing, non-inline)
+  isHtmlOpener: (t) => {
+    if (!t.startsWith("<")) return false;
+    if (["</", "<#", "[#", "<@", "<!", "<?"].some((p) => t.startsWith(p)))
+      return false;
+    if (/\/>\s*$/.test(t)) return false;
+
+    const tagName = extractTagName(t);
+    const normalized =
+      tagName && !tagName.startsWith("${") ? tagName.toLowerCase() : null;
+
+    // Inline tags that have their closing on the same line don't count as openers
+    if (normalized && INLINE_HTML_TAGS.has(normalized)) {
+      const gtIndex = t.indexOf(">");
+      if (gtIndex !== -1) {
+        const after = t.slice(gtIndex + 1);
+        if (new RegExp(`</${normalized}\\b`).test(after)) return false;
+      }
+    }
+    return true;
+  },
+
+  // Self-closing: ends with />
+  isSelfClosing: (t) => /\/>\s*$/.test(t),
+
+  // JSON openers: ends with { or [
+  isJsonOpener: (t) => /{\s*$/.test(t) || /\[\s*$/.test(t),
+
+  // JSON closers: starts with } or ]
+  isJsonCloser: (t) => t.startsWith("}") || t.startsWith("]"),
+
+  // Inline blocks - complete open/close on same line
+  isInline: (t) => {
+    // Inline FTL block: <#...> ... </#...>
+    if (t.startsWith("<#") && t.includes("</#")) return true;
+
+    // Inline macro: <@...> ... </@...>
+    if (/<@[A-Za-z_][A-Za-z0-9_.-]*[^>]*>.*<\/@/.test(t)) return true;
+
+    // Self-closing macro: <@... />
+    if (t.startsWith("<@") && /\/>\s*$/.test(t) && !t.includes("</@"))
+      return true;
+
+    // Inline HTML: <tag>...</tag>
+    if (
+      t.startsWith("<") &&
+      !["</", "<#", "<@", "<!", "<?"].some((p) => t.startsWith(p))
+    ) {
+      const m = t.match(new RegExp(`^<(${TAG_NAME_PATTERN})(\\s|>)`));
+      if (m) {
+        const tag = m[1];
+        const gtIndex = t.indexOf(">");
+        if (gtIndex !== -1) {
+          const after = t.slice(gtIndex + 1);
+          if (new RegExp(`</\\s*${escapeRegex(tag)}\\s*>`).test(after))
+            return true;
+        }
+      }
+    }
+
+    return false;
+  },
+};
+
+// Count HTML closing tags in a line
+const countHtmlClosings = (t, leadingOnly = false) => {
+  const pattern = new RegExp(`</${TAG_NAME_PATTERN}\\s*>`, "g");
+  if (leadingOnly) {
+    let count = 0;
+    let rest = t.trim();
+    while (true) {
+      const match = rest.match(new RegExp(`^</${TAG_NAME_PATTERN}\\s*>\\s*`));
+      if (!match) break;
+      count++;
+      rest = rest.slice(match[0].length);
+    }
+    return count;
+  }
+  let count = 0;
+  while (pattern.exec(t)) count++;
+  return count;
+};
+
+// =============================================================================
+// LINE SPLITTING - Break long lines at tag boundaries
+// =============================================================================
+
 const splitLongLine = (line, printWidth) => {
   const trimmed = line.trim();
   if (trimmed.length <= printWidth) return [trimmed];
 
-  const containsHtmlTag = new RegExp(`</?${ANY_TAG_NAME_PATTERN}`).test(
-    trimmed,
-  );
+  const hasTag = new RegExp(`</?${TAG_NAME_PATTERN}`).test(trimmed);
+  if (!hasTag) return [trimmed];
+
   const parts = [];
   let start = 0;
   let lastBreakable = -1;
-  let inSingle = false;
-  let inDouble = false;
+  let inQuote = null;
   let inTag = false;
 
   const push = (endIndex) => {
     const piece = trimmed.slice(start, endIndex + 1).trim();
-    if (piece !== "") parts.push(piece);
+    if (piece) parts.push(piece);
     start = endIndex + 1;
     while (start < trimmed.length && /\s/.test(trimmed[start])) start++;
     lastBreakable = -1;
@@ -169,289 +191,215 @@ const splitLongLine = (line, printWidth) => {
   for (let i = 0; i < trimmed.length; i++) {
     const ch = trimmed[i];
     const prev = trimmed[i - 1];
-    const escaped = prev === "\\";
 
-    if (!inTag && !escaped && ch === "<" && !inSingle && !inDouble) {
-      inTag = true;
+    if (!inTag && ch === "<" && !inQuote && prev !== "\\") inTag = true;
+
+    if (inTag && prev !== "\\") {
+      if ((ch === '"' || ch === "'") && !inQuote) inQuote = ch;
+      else if (ch === inQuote) inQuote = null;
     }
 
-    if (inTag && !escaped) {
-      if (ch === '"' && !inSingle) inDouble = !inDouble;
-      else if (ch === "'" && !inDouble) inSingle = !inSingle;
-    }
+    if (!inTag && !inQuote && /\s/.test(ch)) lastBreakable = i;
 
-    if (containsHtmlTag && !inTag && !inSingle && !inDouble && /\s/.test(ch)) {
-      lastBreakable = i;
-    }
-
-    if (inTag && !inSingle && !inDouble && ch === ">") {
+    if (inTag && !inQuote && ch === ">") {
       inTag = false;
-
       let j = i + 1;
       while (j < trimmed.length && /\s/.test(trimmed[j])) j++;
       if (j < trimmed.length && trimmed[j] === "<") {
         push(i);
-        i = j - 1; // resume right before the next tag
+        i = j - 1;
         continue;
       }
-
-      if (containsHtmlTag) lastBreakable = i;
+      lastBreakable = i;
     }
 
-    if (
-      containsHtmlTag &&
-      i - start + 1 > printWidth &&
-      lastBreakable >= start
-    ) {
+    if (i - start + 1 > printWidth && lastBreakable >= start) {
       push(lastBreakable);
       i = start - 1;
     }
   }
 
   const tail = trimmed.slice(start).trim();
-  if (tail !== "") parts.push(tail);
+  if (tail) parts.push(tail);
 
   return parts.length > 0 ? parts : [trimmed];
 };
 
+// =============================================================================
+// LOGICAL LINE BUILDING - Handle multi-line macro attributes
+// =============================================================================
+
 const buildLogicalLines = (text, options = {}) => {
   const printWidth = getPrintWidth(options);
-  const logicalLines = [];
-
   const lines = text.split(/\r?\n/);
-  let pendingMacroParts = null;
+  const result = [];
+  let pendingMacro = null;
 
-  const flushPendingMacro = (forceSplit = false) => {
-    if (!pendingMacroParts) return;
-
-    const joined = pendingMacroParts.map((line) => line.trim()).join(" ");
+  const flushMacro = (forceSplit = false) => {
+    if (!pendingMacro) return;
+    const joined = pendingMacro.map((l) => l.trim()).join(" ");
     const shouldJoin = !forceSplit && /\/>\s*$/.test(joined);
-    const targetLines = shouldJoin ? [joined] : pendingMacroParts;
-
-    for (const line of targetLines) {
-      const pieces = splitLongLine(line, printWidth);
-      logicalLines.push(...(pieces.length === 0 ? [""] : pieces));
+    const toProcess = shouldJoin ? [joined] : pendingMacro;
+    for (const line of toProcess) {
+      result.push(...splitLongLine(line, printWidth));
     }
-
-    pendingMacroParts = null;
+    pendingMacro = null;
   };
 
   for (const raw of lines) {
     const trimmed = raw.trim();
 
-    if (pendingMacroParts) {
-      pendingMacroParts.push(trimmed);
-      if (/>\s*$/.test(trimmed)) {
-        const forceSplit = !/\/>\s*$/.test(trimmed);
-        flushPendingMacro(forceSplit);
-      }
+    if (pendingMacro) {
+      pendingMacro.push(trimmed);
+      if (/>\s*$/.test(trimmed)) flushMacro(!/\/>\s*$/.test(trimmed));
       continue;
     }
 
     if (trimmed === "") {
-      logicalLines.push("");
+      result.push("");
       continue;
     }
 
-    // Capture multi-line inline macros: start with <@ and no closing ">" on the same line.
+    // Multi-line macro: starts with <@ but no closing >
     if (
       /^<@/.test(trimmed) &&
       !/>\s*$/.test(trimmed) &&
       !/<\/@/.test(trimmed)
     ) {
-      pendingMacroParts = [trimmed];
+      pendingMacro = [trimmed];
       continue;
     }
 
     const pieces = splitLongLine(trimmed, printWidth);
-    logicalLines.push(...(pieces.length === 0 ? [""] : pieces));
+    result.push(...(pieces.length ? pieces : [""]));
   }
 
-  flushPendingMacro(true);
-
-  return logicalLines;
+  flushMacro(true);
+  return result;
 };
 
-// --- Formatter FTL / HTML / JSON / Macros ---
+// =============================================================================
+// FORMATTER - Unified indentation logic
+// =============================================================================
+
 function formatFtlText(text, options = {}) {
   const lines = buildLogicalLines(text, options);
   const result = [];
   const indentUnit = options.useTabs
     ? "\t"
-    : " ".repeat(typeof options.tabWidth === "number" ? options.tabWidth : 4);
+    : " ".repeat(typeof options.tabWidth === "number" ? options.tabWidth : 2);
 
-  const state = {
-    ftl: 0, // blocs FTL : <#if>, <#list>, <#switch>, <#macro>, <#function>, assign/local/global-wrap, ...
-    json: 0, // { ... }, [ ... ]
-    html: 0, // <div>, <ul>, <li>, <h4>, etc.
-    macro: 0, // <@macro> ... </@macro> ou multi-ligne avec />
-    pendingHtmlMultiline: 0,
-    switchStack: [], // pile de switch { hasCase }
-  };
+  // Unified indent level - no separate counters
+  let indent = 0;
 
-  const isInlineLine = (t) =>
-    isInlineAssignBlock(t) ||
-    isInlineFtlBlock(t) ||
-    isInlineHtmlBlock(t) ||
-    isInlineMacroBlock(t) ||
-    isSelfClosingMacroLine(t);
+  // Track switch nesting for case/default handling
+  const switchStack = [];
 
-  const applyPreAdjustments = (flags) => {
-    const {
-      jsonClose,
-      leadingHtmlClosings,
-      isCaseLine,
-      isElseLine,
-      ftlCloseLine,
-      isSwitchClosing,
-    } = flags;
-
-    if (isSwitchClosing && state.switchStack.length > 0) {
-      const top = state.switchStack.pop();
-      if (top.hasCase && state.ftl > 0) state.ftl--;
-    }
-
-    if (ftlCloseLine && state.ftl > 0) state.ftl--;
-    if (isElseLine && state.ftl > 0) state.ftl--;
-
-    if (isCaseLine && state.ftl > 0) {
-      const top = state.switchStack[state.switchStack.length - 1];
-      if (top && top.hasCase) state.ftl--;
-    }
-
-    if (jsonClose && state.json > 0) state.json--;
-
-    if (leadingHtmlClosings > 0 && state.html > 0) {
-      const dec = Math.min(leadingHtmlClosings, state.html);
-      state.html = Math.max(0, state.html - dec);
-      state.pendingHtmlMultiline = Math.max(
-        0,
-        state.pendingHtmlMultiline - dec,
-      );
-    }
-  };
-
-  const applyPostAdjustments = (t, flags) => {
-    const {
-      jsonOpen,
-      selfClosing,
-      isElseLine,
-      isCaseLine,
-      isSwitchOpener,
-      isHtmlOpening,
-      isMacroOpening,
-      htmlClosingsAfterContent,
-    } = flags;
-
-    if (jsonOpen) state.json++;
-
-    if (isFtlBlockOpener(t) && !selfClosing) state.ftl++;
-    if ((isElseLine || isCaseLine) && !selfClosing) state.ftl++;
-
-    if (isSwitchOpener && !selfClosing)
-      state.switchStack.push({ hasCase: false });
-    if (isCaseLine && state.switchStack.length > 0) {
-      state.switchStack[state.switchStack.length - 1].hasCase = true;
-    }
-
-    if (isHtmlOpening) {
-      state.html++;
-      if (!/>\s*$/.test(t)) state.pendingHtmlMultiline++;
-    }
-
-    if (isMacroOpening) state.macro++;
-
-    if (htmlClosingsAfterContent > 0) {
-      const dec = Math.min(htmlClosingsAfterContent, state.html);
-      state.html = Math.max(0, state.html - dec);
-      state.pendingHtmlMultiline = Math.max(
-        0,
-        state.pendingHtmlMultiline - dec,
-      );
-    }
-
-    if (
-      state.pendingHtmlMultiline > 0 &&
-      !t.startsWith("<") &&
-      />\s*$/.test(t)
-    ) {
-      state.pendingHtmlMultiline--;
-      if (selfClosing && state.html > 0) state.html--;
-    }
-  };
-
-  const buildFlags = (t, leadingHtmlClosings, htmlClosingsAfterContent) => {
-    const jsonClose = t.startsWith("}") || t.startsWith("]");
-    const jsonOpen = /{\s*$/.test(t) || /\[\s*$/.test(t);
-    const selfClosing = /\/>\s*$/.test(t);
-    const isCaseLine = isCaseLike(t);
-    const isElseLine = isElseLike(t);
-    const ftlCloseLine = isFtlClosingTag(t);
-    const isSwitchOpener = /^<#switch\b/.test(t);
-    const isSwitchClosing = /^<\/#switch>/.test(t);
-    const isMacroClosingLine = isMacroClosing(t) || t === "/>";
-    const isMacroOpening = isMacroOpener(t);
-    const isHtmlOpening = isHtmlOpener(t);
-
-    return {
-      jsonClose,
-      jsonOpen,
-      selfClosing,
-      isCaseLine,
-      isElseLine,
-      ftlCloseLine,
-      isSwitchOpener,
-      isSwitchClosing,
-      isMacroClosingLine,
-      isMacroOpening,
-      isHtmlOpening,
-      leadingHtmlClosings,
-      htmlClosingsAfterContent,
-    };
-  };
-
-  for (let rawLine of lines) {
+  for (const rawLine of lines) {
     const t = rawLine.trim();
-    const totalHtmlClosings = countHtmlClosingTags(t);
-    const leadingHtmlClosings = countLeadingHtmlClosings(t);
-    const htmlClosingsAfterContent = Math.max(
-      0,
-      totalHtmlClosings - leadingHtmlClosings,
-    );
 
     if (t === "") {
       result.push("");
       continue;
     }
 
-    // Cas spéciaux inline qu'on ne veut pas faire bouger les compteurs :
-    //  - <#assign ...> ... </#assign> sur une ligne
-    //  - <#if ...> ... </#if> ou <#list ...> ... </#list> sur une ligne (NOUVEAU)
-    //  - <tag>...</tag> sur une ligne
-    //  - <@macro ...>...</@macro> sur une ligne
-    //  - <@macro ... /> (ligne qui COMMENCE par la macro)
-    if (isInlineLine(t)) {
-      const totalIndent = state.ftl + state.json + state.html + state.macro;
-      result.push(indentUnit.repeat(totalIndent) + t);
+    // Inline elements: complete block on one line, no indent change
+    if (classify.isInline(t)) {
+      result.push(indentUnit.repeat(indent) + t);
       continue;
     }
 
-    const flags = buildFlags(t, leadingHtmlClosings, htmlClosingsAfterContent);
+    const isSelfClosing = classify.isSelfClosing(t);
+    const leadingHtmlClosings = countHtmlClosings(t, true);
+    const totalHtmlClosings = countHtmlClosings(t, false);
+    const trailingHtmlClosings = totalHtmlClosings - leadingHtmlClosings;
 
-    applyPreAdjustments(flags);
+    // === PRE-LINE ADJUSTMENTS (dedent before printing) ===
 
-    if (flags.isMacroClosingLine && state.macro > 0) {
-      state.macro--;
+    // FTL closers: </#...>
+    if (classify.isFtlCloser(t)) {
+      // Switch closer also pops the case indent
+      if (classify.isSwitchCloser(t) && switchStack.length > 0) {
+        const sw = switchStack.pop();
+        if (sw.hasCase) indent = Math.max(0, indent - 1);
+      }
+      indent = Math.max(0, indent - 1);
     }
 
-    // --- IMPRESSION ---
+    // FTL intermediate: <#else>, <#elseif>, <#recover>
+    if (classify.isFtlIntermediate(t)) {
+      indent = Math.max(0, indent - 1);
+    }
 
-    const totalIndent = state.ftl + state.json + state.html + state.macro;
-    result.push(indentUnit.repeat(totalIndent) + t);
+    // Case/default: dedent if we already have a case in this switch
+    if (classify.isCaseLike(t)) {
+      const current = switchStack[switchStack.length - 1];
+      if (current && current.hasCase) {
+        indent = Math.max(0, indent - 1);
+      }
+    }
 
-    // --- RÉ-INDENTATION APRÈS IMPRESSION ---
+    // JSON closers: } or ]
+    if (classify.isJsonCloser(t)) {
+      indent = Math.max(0, indent - 1);
+    }
 
-    applyPostAdjustments(t, flags);
+    // HTML closing tags at start of line
+    if (leadingHtmlClosings > 0) {
+      indent = Math.max(0, indent - leadingHtmlClosings);
+    }
+
+    // Macro closers: </@...> or standalone />
+    if (classify.isMacroCloser(t) || t === "/>") {
+      indent = Math.max(0, indent - 1);
+    }
+
+    // === PRINT THE LINE ===
+
+    result.push(indentUnit.repeat(indent) + t);
+
+    // === POST-LINE ADJUSTMENTS (indent for next line) ===
+
+    // FTL openers
+    if (classify.isFtlOpener(t) && !isSelfClosing) {
+      indent++;
+      if (classify.isSwitchOpener(t)) {
+        switchStack.push({ hasCase: false });
+      }
+    }
+
+    // FTL intermediate: indent after <#else> etc.
+    if (classify.isFtlIntermediate(t)) {
+      indent++;
+    }
+
+    // Case/default: mark switch as having case, then indent
+    if (classify.isCaseLike(t)) {
+      if (switchStack.length > 0) {
+        switchStack[switchStack.length - 1].hasCase = true;
+      }
+      indent++;
+    }
+
+    // JSON openers
+    if (classify.isJsonOpener(t)) {
+      indent++;
+    }
+
+    // HTML openers (but handle closings on the same line)
+    if (classify.isHtmlOpener(t)) {
+      indent++;
+    }
+
+    // Macro openers
+    if (classify.isMacroOpener(t)) {
+      indent++;
+    }
+
+    // HTML closing tags after content on same line
+    if (trailingHtmlClosings > 0) {
+      indent = Math.max(0, indent - trailingHtmlClosings);
+    }
   }
 
   return result.join("\n");
