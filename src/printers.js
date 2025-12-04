@@ -12,6 +12,16 @@ const INLINE_TAGS = new Set([
   "a",
 ]);
 
+const HTML_TAG_NAME_PATTERN = "[A-Za-z][A-Za-z0-9-]*";
+const DYNAMIC_TAG_NAME_PATTERN = "\\$\\{[^}]+\\}";
+const ANY_TAG_NAME_PATTERN = `(?:${HTML_TAG_NAME_PATTERN}|${DYNAMIC_TAG_NAME_PATTERN})`;
+
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const matchTagName = (t) => {
+  const match = t.match(new RegExp(`^<(${ANY_TAG_NAME_PATTERN})`));
+  return match ? match[1] : null;
+};
+
 // --- Helpers FTL généraux ---
 const isFtlClosingTag = (t) => /^<\/#/.test(t.trim());
 const isElseLike = (t) => /^<#(else|elseif|recover)\b/.test(t.trim());
@@ -50,16 +60,17 @@ const isHtmlOpener = (t) => {
   if (["</", "<#", "[#", "<@", "<!", "<?"].some((p) => t.startsWith(p)))
     return false;
 
-  const tagMatch = t.match(/^<([A-Za-z][A-Za-z0-9-]*)/);
-  const tagName = tagMatch ? tagMatch[1].toLowerCase() : null;
+  const tagName = matchTagName(t);
+  const normalizedTag =
+    tagName && !tagName.startsWith("${") ? tagName.toLowerCase() : null;
 
   if (/\/>\s*$/.test(t)) return false;
 
-  if (tagName && INLINE_TAGS.has(tagName)) {
+  if (normalizedTag && INLINE_TAGS.has(normalizedTag)) {
     const firstGt = t.indexOf(">");
     if (firstGt !== -1) {
       const after = t.slice(firstGt + 1);
-      const closeRe = new RegExp(`</${tagName}\\b`);
+      const closeRe = new RegExp(`</${normalizedTag}\\b`);
       if (closeRe.test(after)) return false;
     }
     return true;
@@ -80,7 +91,7 @@ const isMacroClosing = (t) => /^<\/@[A-Za-z_][A-Za-z0-9_.-]*>/.test(t.trim());
 
 // --- Helpers HTML closing tags ---
 const countHtmlClosingTags = (t) => {
-  const closingRe = /<\/([A-Za-z][A-Za-z0-9-]*)>/g;
+  const closingRe = new RegExp(`</${ANY_TAG_NAME_PATTERN}\\s*>`, "g");
   let count = 0;
   while (closingRe.exec(t)) count++;
   return count;
@@ -90,7 +101,9 @@ const countLeadingHtmlClosings = (t) => {
   let count = 0;
   let rest = t.trim();
   while (true) {
-    const match = rest.match(/^<\/([A-Za-z][A-Za-z0-9-]*)>\s*/);
+    const match = rest.match(
+      new RegExp(`^</${ANY_TAG_NAME_PATTERN}\\s*>\\s*`),
+    );
     if (!match) break;
     count++;
     rest = rest.slice(match[0].length);
@@ -110,13 +123,13 @@ const isInlineHtmlBlock = (t) => {
   if (!t.startsWith("<")) return false;
   if (["</", "<#", "<@", "<!", "<?"].some((p) => t.startsWith(p))) return false;
 
-  const m = t.match(/^<([A-Za-z][A-Za-z0-9-]*)(\s|>)/);
+  const m = t.match(new RegExp(`^<(${ANY_TAG_NAME_PATTERN})(\\s|>)`));
   if (!m) return false;
   const tag = m[1];
   const firstGt = t.indexOf(">");
   if (firstGt === -1) return false;
   const after = t.slice(firstGt + 1);
-  const closeRe = new RegExp(`</${tag}\\b`);
+  const closeRe = new RegExp(`</\\s*${escapeRegex(tag)}\\s*>`);
   return closeRe.test(after);
 };
 const isInlineMacroBlock = (t) =>
@@ -128,9 +141,104 @@ const isSelfClosingMacroLine = (t) => {
   return t.startsWith("<@") && /\/>\s*$/.test(t) && !t.includes("</@");
 };
 
+const getPrintWidth = (options = {}) =>
+  typeof options.printWidth === "number" ? options.printWidth : 80;
+
+const splitLongLine = (line, printWidth) => {
+  const trimmed = line.trim();
+  if (trimmed.length <= printWidth) return [trimmed];
+
+  const containsHtmlTag = new RegExp(`</?${ANY_TAG_NAME_PATTERN}`).test(
+    trimmed,
+  );
+  const parts = [];
+  let start = 0;
+  let lastBreakable = -1;
+  let inSingle = false;
+  let inDouble = false;
+  let inTag = false;
+
+  const push = (endIndex) => {
+    const piece = trimmed.slice(start, endIndex + 1).trim();
+    if (piece !== "") parts.push(piece);
+    start = endIndex + 1;
+    while (start < trimmed.length && /\s/.test(trimmed[start])) start++;
+    lastBreakable = -1;
+  };
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    const prev = trimmed[i - 1];
+    const escaped = prev === "\\";
+
+    if (!inTag && !escaped && ch === "<" && !inSingle && !inDouble) {
+      inTag = true;
+    }
+
+    if (inTag && !escaped) {
+      if (ch === '"' && !inSingle) inDouble = !inDouble;
+      else if (ch === "'" && !inDouble) inSingle = !inSingle;
+    }
+
+    if (containsHtmlTag && !inTag && !inSingle && !inDouble && /\s/.test(ch)) {
+      lastBreakable = i;
+    }
+
+    if (inTag && !inSingle && !inDouble && ch === ">") {
+      inTag = false;
+
+      let j = i + 1;
+      while (j < trimmed.length && /\s/.test(trimmed[j])) j++;
+      if (j < trimmed.length && trimmed[j] === "<") {
+        push(i);
+        i = j - 1; // resume right before the next tag
+        continue;
+      }
+
+      if (containsHtmlTag) lastBreakable = i;
+    }
+
+    if (
+      containsHtmlTag &&
+      i - start + 1 > printWidth &&
+      lastBreakable >= start
+    ) {
+      push(lastBreakable);
+      i = start - 1;
+    }
+  }
+
+  const tail = trimmed.slice(start).trim();
+  if (tail !== "") parts.push(tail);
+
+  return parts.length > 0 ? parts : [trimmed];
+};
+
+const buildLogicalLines = (text, options = {}) => {
+  const printWidth = getPrintWidth(options);
+  const logicalLines = [];
+
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.trim() === "") {
+      logicalLines.push("");
+      continue;
+    }
+
+    const pieces = splitLongLine(raw, printWidth);
+    if (pieces.length === 0) {
+      logicalLines.push("");
+      continue;
+    }
+
+    logicalLines.push(...pieces);
+  }
+
+  return logicalLines;
+};
+
 // --- Formatter FTL / HTML / JSON / Macros ---
 function formatFtlText(text, options = {}) {
-  const lines = text.split(/\r?\n/);
+  const lines = buildLogicalLines(text, options);
   const result = [];
   const indentUnit = options.useTabs
     ? "\t"

@@ -38,3 +38,14 @@
     </#if>
   </#list>
 </div>
+
+<video class="${classes}"
+  data-setup='{"controls": true, "autoplay": false, "preload": "auto"}'
+  data-id="${configVideo.videoId}"
+  >
+  <p class="vjs-no-js">To view this video please enable JavaScript, and consider
+    upgrading to a web browser that
+    <a href="https://example.com/html5-support/" target="_blank">supports HTML5
+      video</a>
+  </p>
+</video>
