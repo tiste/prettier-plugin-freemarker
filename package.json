@@ -1,6 +1,6 @@
 {
   "name": "prettier-plugin-freemarker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Code formatter for FTL Freemarker templating",
   "keywords": [
     "prettier",
