@@ -9,6 +9,12 @@ const HTML_TAG_PATTERN = "[A-Za-z][A-Za-z0-9-]*";
 const DYNAMIC_TAG_PATTERN = "\\$\\{[^}]+\\}";
 const TAG_NAME_PATTERN = `(?:${HTML_TAG_PATTERN}|${DYNAMIC_TAG_PATTERN})`;
 
+// Pre-compiled regex patterns for performance
+const TAG_NAME_REGEX = new RegExp(`^<(${TAG_NAME_PATTERN})`);
+const HTML_CLOSING_REGEX = new RegExp(`</${TAG_NAME_PATTERN}\\s*>`, "g");
+const LEADING_CLOSING_REGEX = new RegExp(`^</${TAG_NAME_PATTERN}\\s*>\\s*`);
+const TAG_DETECTION_REGEX = new RegExp(`</?${TAG_NAME_PATTERN}`);
+
 const INLINE_HTML_TAGS = new Set([
   "span",
   "b",
@@ -38,7 +44,7 @@ const FTL_BLOCK_OPENERS = [
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const extractTagName = (line) => {
-  const match = line.match(new RegExp(`^<(${TAG_NAME_PATTERN})`));
+  const match = line.match(TAG_NAME_REGEX);
   return match ? match[1] : null;
 };
 
@@ -146,20 +152,21 @@ const classify = {
 
 // Count HTML closing tags in a line
 const countHtmlClosings = (t, leadingOnly = false) => {
-  const pattern = new RegExp(`</${TAG_NAME_PATTERN}\\s*>`, "g");
   if (leadingOnly) {
     let count = 0;
     let rest = t.trim();
     while (true) {
-      const match = rest.match(new RegExp(`^</${TAG_NAME_PATTERN}\\s*>\\s*`));
+      const match = rest.match(LEADING_CLOSING_REGEX);
       if (!match) break;
       count++;
       rest = rest.slice(match[0].length);
     }
     return count;
   }
+  // Reset regex lastIndex before use since it's global
+  HTML_CLOSING_REGEX.lastIndex = 0;
   let count = 0;
-  while (pattern.exec(t)) count++;
+  while (HTML_CLOSING_REGEX.exec(t)) count++;
   return count;
 };
 
@@ -171,7 +178,7 @@ const splitLongLine = (line, printWidth) => {
   const trimmed = line.trim();
   if (trimmed.length <= printWidth) return [trimmed];
 
-  const hasTag = new RegExp(`</?${TAG_NAME_PATTERN}`).test(trimmed);
+  const hasTag = TAG_DETECTION_REGEX.test(trimmed);
   if (!hasTag) return [trimmed];
 
   const parts = [];
