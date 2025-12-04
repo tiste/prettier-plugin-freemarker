@@ -1,5 +1,7 @@
 # prettier-plugin-freemarker
 
+[![CI](https://github.com/tiste/prettier-plugin-freemarker/actions/workflows/ci.yml/badge.svg)](https://github.com/tiste/prettier-plugin-freemarker/actions/workflows/ci.yml)
+
 A [Prettier](https://prettier.io/) plugin for formatting [FreeMarker](https://freemarker.apache.org/) template files (`.ftl`).
 
 ## Installation
