@@ -101,9 +101,7 @@ const countLeadingHtmlClosings = (t) => {
   let count = 0;
   let rest = t.trim();
   while (true) {
-    const match = rest.match(
-      new RegExp(`^</${ANY_TAG_NAME_PATTERN}\\s*>\\s*`),
-    );
+    const match = rest.match(new RegExp(`^</${ANY_TAG_NAME_PATTERN}\\s*>\\s*`));
     if (!match) break;
     count++;
     rest = rest.slice(match[0].length);

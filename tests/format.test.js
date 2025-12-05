@@ -4,7 +4,6 @@ const plugin = require("../src/index");
 
 const fixturesDir = path.join(__dirname, "fixtures");
 
-// Get all subdirectories in fixtures directory
 const getTestCases = () => {
   const dirs = fs
     .readdirSync(fixturesDir, { withFileTypes: true })

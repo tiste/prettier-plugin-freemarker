@@ -19,4 +19,7 @@ type="danger" disabled=true />
 <p>Card content here</p>
 <@button text="Action" />
 </@card>
+
+<@sample.cta entityId=item.identifier entityLabel=item.label organization=item.meta.organizationId trackingId=item.trackingId submitMode=config.submitMode.toString()
+                                    uniqueId=uuid />
 </div>
